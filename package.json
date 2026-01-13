@@ -1,0 +1,13 @@
+{
+  "dependencies": {
+    "@elysiajs/websocket": "^0.2.8",
+    "elysia": "^1.4.21",
+    "hono": "^4.11.4",
+    "mongodb": "^7.0.0",
+    "msgpackr": "^1.11.8",
+    "protobufjs": "^8.0.0",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
+    "ws": "^8.19.0"
+  }
+}
