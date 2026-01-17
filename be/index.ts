@@ -8,8 +8,24 @@ new Elysia()
   .use(websocket())
   .ws("/", {
     async message(ws, message) {
-      await performOps();
-      ws.send(JSON.stringify({ status: "ok" }));
+      let data;
+      try {
+        data = JSON.parse(message.toString());
+      } catch (e) {
+        await performOps();
+        ws.send(JSON.stringify({ status: "ok" }));
+        return;
+      }
+      
+      if (data && data._test) {
+        ws.send(JSON.stringify({ 
+          original: data.payload, 
+          echo: data.payload 
+        }));
+      } else {
+        await performOps();
+        ws.send(JSON.stringify({ status: "ok" }));
+      }
     },
   })
   .listen(3000);

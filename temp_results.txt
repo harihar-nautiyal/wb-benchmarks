@@ -1,0 +1,18 @@
+Starting Client for target: wpn
+{"target":"wpn","ppm":99674}
+Starting Client for target: dd
+{"target":"dd","ppm":91503}
+Starting Client for target: dh
+{"target":"dh","ppm":86999}
+Starting Client for target: wmb
+{"target":"wmb","ppm":91592}
+Starting Client for target: sd
+{"target":"sd","ppm":84683}
+Starting Client for target: sb
+{"target":"sb","ppm":90626}
+Starting Client for target: sn
+{"target":"sn","ppm":94788}
+Starting Client for target: bh
+{"target":"bh","ppm":95927}
+Starting Client for target: nmn
+{"target":"nmn","ppm":102816}

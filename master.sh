@@ -1,112 +1,205 @@
 #!/bin/bash
 
+# Configuration
+PORT=3000
+# Note: Duration is currently controlled inside main.go (default 60s)
+# If you want to change it, edit const Duration in main.go
 RESULTS_FILE="results.json"
-echo "[]" > $RESULTS_FILE
+TEMP_RESULTS="temp_results.jsonl"
+GO_CLIENT_DIR="./bench_client_go"
+BENCH_BIN="./bench_client_bin"
 
-# Function to kill anything on port 3000
-cleanup_port() {
-    # Kill process using port 3000
-    lsof -ti:3000 | xargs kill -9 2>/dev/null
-    # Wait for it to die
-    while lsof -i:3000 >/dev/null 2>&1; do
-        sleep 0.1
-    done
+# --- 1. Tool Setup ---
+
+build_go_client() {
+    echo "Building Go Client..."
+    if [ ! -d "$GO_CLIENT_DIR" ]; then
+        echo "Error: Directory $GO_CLIENT_DIR not found."
+        exit 1
+    fi
+
+    cd $GO_CLIENT_DIR
+    # Ensure dependencies are clean
+    if [ ! -f "go.mod" ]; then
+        go mod init bench_client
+        go get github.com/gorilla/websocket
+        go get github.com/vmihailenco/msgpack/v5
+    fi
+
+    go build -o ../bench_client_bin main.go
+    if [ $? -ne 0 ]; then
+        echo "Build failed."
+        exit 1
+    fi
+    cd ..
+    echo "Go Client built successfully."
 }
 
-wait_for_port() {
-    local max_retries=30 # 3 seconds roughly (0.1s * 30)
-    local retries=0
+# --- 2. Helper Functions ---
 
-    # We use nc (netcat) or bash tcp check to see if port 3000 is open
-    while ! nc -z localhost 3000 2>/dev/null; do
+cleanup_port() {
+    # Find PID using port 3000
+    PID=$(lsof -ti:$PORT)
+    if [ ! -z "$PID" ]; then
+        kill $PID 2>/dev/null
+        # Wait for it to actually die
+        tail --pid=$PID -f /dev/null 2>/dev/null
+    fi
+}
+
+wait_for_port_open() {
+    local retries=0
+    local max_retries=50
+    while ! nc -z localhost $PORT 2>/dev/null; do
         sleep 0.1
         retries=$((retries+1))
-        if [ $retries -ge $max_retries ]; then
-            echo "Timeout waiting for server on port 3000"
-            return 1
-        fi
+        if [ $retries -ge $max_retries ]; then return 1; fi
     done
     return 0
 }
 
-run_benchmark() {
-    KEYWORD=$1
-    CMD=$2
+# --- 3. Define Benchmarks ---
 
-    echo "=================================="
-    echo "Running Benchmark: $KEYWORD"
+declare -A COMMANDS
+COMMANDS["nmn"]="node nmn/index.js"
+COMMANDS["wpn"]="node wpn/index.js"
+COMMANDS["sn"]="node sn/index.js"
+COMMANDS["smn"]="node smn/index.js"
+COMMANDS["bh"]="bun run bh/index.ts"
+COMMANDS["dd"]="deno run --allow-net --allow-read --allow-env --allow-sys dd/main.ts"
+COMMANDS["wmb"]="bun run wmb/index.ts"
+COMMANDS["sb"]="bun run sb/index.js"
+COMMANDS["dh"]="deno run --allow-net --allow-read --allow-env --allow-sys dh/main.ts"
+COMMANDS["sd"]="deno run --allow-net --allow-read --allow-env --allow-sys sd/main.ts"
+
+TARGETS=("nmn" "wpn" "sn" "bh" "dd" "wmb" "sb" "dh" "sd")
+
+# --- 4. Execution Logic ---
+
+run_target() {
+    local TARGET=$1
+    local CMD=${COMMANDS[$TARGET]}
+    local PHASE=$2
+
+    echo "------------------------------------------------"
+    echo "Target: $TARGET | Phase: $PHASE"
     echo "Command: $CMD"
-    echo "=================================="
 
     cleanup_port
 
-    # Start Server in background
+    # Start Server
     $CMD > /dev/null 2>&1 &
     SERVER_PID=$!
 
-    # Wait for server to be actually ready
-    if wait_for_port; then
-        # Run Client
-        OUTPUT=$(node bench_client.js $KEYWORD)
+    if wait_for_port_open; then
+        # Run the Go Client
+        # The Go client handles the progress bar (stderr) and output (stdout)
+        OUTPUT=$($BENCH_BIN "$TARGET")
 
-        # Check if output is empty (crashed client)
-        if [ -z "$OUTPUT" ]; then
-            echo "Error: Client produced no output"
-        else
-            echo "Result: $OUTPUT"
+        # Extract PPM (Packets Per Minute / Total Count) from JSON output
+        # Example output: {"target":"nmn","ppm":150000}
+        PPM=$(echo $OUTPUT | grep -o '"ppm": *[0-9]*' | awk -F: '{print $2}')
 
-            # JSON Formatting logic
-            # Remove last line (should be ']')
-            sed -i '$ d' $RESULTS_FILE
-            # Add comma if file has content other than [
-            if [ "$(cat $RESULTS_FILE | wc -l)" -gt 1 ]; then
-                echo "," >> $RESULTS_FILE
-            fi
-            echo "$OUTPUT" >> $RESULTS_FILE
-            echo "]" >> $RESULTS_FILE
-        fi
+        if [ -z "$PPM" ]; then PPM=0; fi
+
+        echo "Result: $PPM total packets"
+
+        # Save to temp file
+        echo "{\"target\": \"$TARGET\", \"phase\": \"$PHASE\", \"ppm\": $PPM}" >> $TEMP_RESULTS
+
     else
-        echo "Skipping $KEYWORD (Server failed to start)"
+        echo "  FAILED: Server did not start on port $PORT"
+        echo "{\"target\": \"$TARGET\", \"phase\": \"$PHASE\", \"ppm\": 0}" >> $TEMP_RESULTS
     fi
 
     # Cleanup
-    kill $SERVER_PID 2>/dev/null
+    kill -SIGTERM $SERVER_PID 2>/dev/null
+    wait $SERVER_PID 2>/dev/null
     cleanup_port
-    sleep 1
+
+    # Cool down
+    echo "  Cooling down (2s)..."
+    sleep 2
 }
 
-# 1. nmn (Node Native Msgpack)
-run_benchmark "nmn" "node nmn/index.js"
+# --- 5. Main Script ---
 
-# 2. sn (Socket.io Node)
-run_benchmark "sn" "node sn/index.js"
-
-# 3. wpn (WS Proto Node)
-run_benchmark "wpn" "node wpn/index.js"
-
-# 4. sb (Socket.io Bun)
-run_benchmark "sb" "bun run sb/index.js"
-
-# 5. wmb (WS Msgpack Bun)
-run_benchmark "wmb" "bun run wmb/index.ts"
-
-# 6. bh (Bun Hono)
-run_benchmark "bh" "bun run bh/index.ts"
-
-# 7. be (Bun Elysia)
-run_benchmark "be" "bun run be/index.ts"
-
-# 8. sd (Socket.io Deno)
-# Use --unstable-byonm to help with node_modules resolution if needed,
-# but usually explicitly allowing env/read/net is enough with the db_bench fix.
-run_benchmark "sd" "deno run --allow-net --allow-read --allow-env --allow-sys sd/main.ts"
-
-# 9. dh (Deno Hono)
-run_benchmark "dh" "deno run --allow-net --allow-read --allow-env --allow-sys dh/main.ts"
-
-# 10. dd (Deno Native)
-run_benchmark "dd" "deno run --allow-net --allow-read --allow-env --allow-sys dd/main.ts"
+build_go_client
+echo "" > $TEMP_RESULTS
 
 echo "=================================="
-echo "Benchmarks Complete. Results:"
-cat $RESULTS_FILE
+echo "PHASE 1: Forward Order"
+echo "=================================="
+
+for TARGET in "${TARGETS[@]}"; do
+    run_target "$TARGET" "1"
+done
+
+echo ""
+echo "=================================="
+echo "PHASE 2: Reverse Order"
+echo "=================================="
+
+# Loop backwards
+for (( i=${#TARGETS[@]}-1; i>=0; i-- )); do
+    TARGET=${TARGETS[$i]}
+    run_target "$TARGET" "2"
+done
+
+# --- 6. Python Analysis ---
+
+echo ""
+echo "=================================="
+echo "Generating Final Leaderboard"
+echo "=================================="
+
+python3 << 'EOF'
+import json
+import sys
+
+results = {}
+
+try:
+    with open('temp_results.jsonl', 'r') as f:
+        for line in f:
+            if not line.strip(): continue
+            data = json.loads(line)
+            name = data['target']
+            phase = data['phase']
+            ppm = int(data['ppm'])
+
+            if name not in results:
+                results[name] = {'p1': 0, 'p2': 0}
+
+            if phase == "1": results[name]['p1'] = ppm
+            if phase == "2": results[name]['p2'] = ppm
+except FileNotFoundError:
+    print("No results found.")
+    sys.exit(1)
+
+final_list = []
+for name, scores in results.items():
+    p1 = scores['p1']
+    p2 = scores['p2']
+    avg = (p1 + p2) / 2
+
+    final_list.append({
+        'name': name,
+        'p1': p1,
+        'p2': p2,
+        'avg': avg
+    })
+
+final_list.sort(key=lambda x: x['avg'], reverse=True)
+
+print(f"{'Rank':<6}{'Target':<8}{'Phase 1':<12}{'Phase 2':<12}{'Average':<12}{'Diff %':<10}")
+print("-" * 60)
+
+for i, r in enumerate(final_list, 1):
+    if r['avg'] > 0:
+        diff = abs(r['p1'] - r['p2'])
+        diff_pct = (diff / r['avg']) * 100
+        print(f"{i:<6}{r['name']:<8}{r['p1']:<12}{r['p2']:<12}{r['avg']:<12.0f}{diff_pct:>5.1f}%")
+    else:
+        print(f"{'--':<6}{r['name']:<8}{'FAILED':<24}")
+EOF

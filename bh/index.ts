@@ -12,8 +12,25 @@ app.get(
   upgradeWebSocket((c) => {
     return {
       onMessage: async (event, ws) => {
-        await performOps();
-        ws.send(JSON.stringify({ status: "ok" }));
+        let data;
+        try {
+          const text = event.data.toString();
+          data = JSON.parse(text);
+        } catch (e) {
+          await performOps();
+          ws.send(JSON.stringify({ status: "ok" }));
+          return;
+        }
+        
+        if (data && data._test) {
+          ws.send(JSON.stringify({ 
+            original: data.payload, 
+            echo: data.payload 
+          }));
+        } else {
+          await performOps();
+          ws.send(JSON.stringify({ status: "ok" }));
+        }
       },
     };
   }),

@@ -12,10 +12,22 @@ Bun.serve({
   },
   websocket: {
     async message(ws, message) {
-      // Bun returns raw buffer for binary
       const data = packer.unpack(message);
-      await performOps();
-      ws.send(packer.pack({ status: "ok" }));
+      
+      if (data && data._test) {
+        ws.send(packer.pack({ 
+          original: data.payload, 
+          echo: data.payload 
+        }));
+      } else if (data && data.original) {
+        ws.send(packer.pack({ 
+          original: data.original, 
+          echo: data.original 
+        }));
+      } else {
+        await performOps();
+        ws.send(packer.pack({ status: "ok" }));
+      }
     },
   },
 });

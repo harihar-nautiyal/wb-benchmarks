@@ -12,8 +12,25 @@ console.log("SD Ready");
 
 io.on("connection", (socket) => {
   socket.on("message", async (data) => {
-    await performOps();
-    socket.emit("response", { status: "ok" });
+    let payload = data;
+    let isTest = false;
+    
+    if (data && typeof data === 'object') {
+      if (data._test) {
+        isTest = true;
+        payload = data.payload;
+      }
+    }
+    
+    if (isTest) {
+      socket.emit("response", { 
+        original: payload, 
+        echo: payload 
+      });
+    } else {
+      await performOps();
+      socket.emit("response", { status: "ok" });
+    }
   });
 });
 
